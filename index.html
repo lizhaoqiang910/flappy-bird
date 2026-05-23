@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Flappy Bird</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+canvas {
+  display: block;
+  margin: 0 auto;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+(function() {
+  'use strict';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // === 自适应尺寸 ===
+  let W, H, scale;
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const gameW = 288, gameH = 512;
+    const winW = window.innerWidth, winH = window.innerHeight;
+    const s = Math.min(winW / gameW, winH / gameH);
+    canvas.style.width = (gameW * s) + 'px';
+    canvas.style.height = (gameH * s) + 'px';
+    canvas.width = gameW * dpr;
+    canvas.height = gameH * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    W = gameW;
+    H = gameH;
+    scale = s;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // === 难度配置 ===
+  const DIFFICULTIES = {
+    easy: {
+      label: 'Easy',
+      color: '#4caf50',
+      gravity: 0.15,
+      jumpForce: -4,
+      pipeSpeed: 1.5,
+      pipeGap: 150,
+      pipeInterval: 110
+    },
+    normal: {
+      label: 'Normal',
+      color: '#ff9800',
+      gravity: 0.2,
+      jumpForce: -5,
+      pipeSpeed: 2,
+      pipeGap: 150,
+      pipeInterval: 100
+    },
+    hard: {
+      label: 'Hard',
+      color: '#f44336',
+      gravity: 0.25,
+      jumpForce: -6,
+      pipeSpeed: 2.5,
+      pipeGap: 150,
+      pipeInterval: 90
+    }
+  };
+
+  // === 固定常量 ===
+  const PIPE_WIDTH = 52;
+  const GROUND_HEIGHT = 56;
+  const BIRD_W = 34;
+  const BIRD_H = 24;
+
+  // === 颜色 ===
+  const COLORS = {
+    sky: '#70c5ce',
+    ground: '#ded895',
+    groundStripe: '#36752e',
+    groundDark: '#546e2a',
+    pipe: '#73bf2e',
+    pipeDark: '#558b1f',
+    pipeHighlight: '#8ed349',
+    pipeBorder: '#3b5c14',
+    bird: '#f7a81e',
+    birdDark: '#e87f17',
+    birdBeak: '#ff6b35',
+    birdEye: '#fff',
+    birdPupil: '#000',
+    birdWing: '#e6c83c',
+    cloud: 'rgba(255,255,255,0.8)',
+    text: '#fff',
+    textStroke: '#000',
+  };
+
+  // === 游戏状态 ===
+  let state = 'menu';
+  let difficulty = 'normal';
+  let bird, pipes, score, bestScore, frameCount, groundX;
+  let deathTimer = 0;
+
+  let GRAVITY, JUMP_FORCE, PIPE_SPEED, PIPE_GAP, PIPE_SPAWN_INTERVAL;
+
+  function applyDifficulty() {
+    const d = DIFFICULTIES[difficulty];
+    GRAVITY = d.gravity;
+    JUMP_FORCE = d.jumpForce;
+    PIPE_SPEED = d.pipeSpeed;
+    PIPE_GAP = d.pipeGap;
+    PIPE_SPAWN_INTERVAL = d.pipeInterval;
+  }
+
+  function initGame() {
+    bird = {
+      x: 68,
+      y: H / 2 - 20,
+      vy: 0,
+      rotation: 0,
+      wingFrame: 0,
+      wingDir: 1
+    };
+    pipes = [];
+    score = 0;
+    frameCount = 0;
+    groundX = 0;
+  }
+
+  function getBestKey() { return 'flappy_best_' + difficulty; }
+  bestScore = 0;
+  initGame();
+
+  const menuButtons = [
+    { key: 'easy', y: 0 },
+    { key: 'normal', y: 0 },
+    { key: 'hard', y: 0 }
+  ];
+
+  // === 绘制函数 ===
+  function drawSky() {
+    ctx.fillStyle = COLORS.sky;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawClouds() {
+    ctx.fillStyle = COLORS.cloud;
+    const clouds = [
+      {x: 30, y: 80, w: 60, h: 20},
+      {x: 150, y: 50, w: 80, h: 25},
+      {x: 240, y: 100, w: 50, h: 18},
+    ];
+    clouds.forEach(c => {
+      ctx.beginPath();
+      ctx.ellipse(c.x, c.y, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  function drawGround() {
+    const gY = H - GROUND_HEIGHT;
+    ctx.fillStyle = COLORS.ground;
+    ctx.fillRect(0, gY, W, GROUND_HEIGHT);
+    ctx.fillStyle = COLORS.groundStripe;
+    ctx.fillRect(0, gY, W, 12);
+    ctx.fillStyle = COLORS.groundDark;
+    for (let i = -1; i < W / 12 + 2; i++) {
+      const xOff = ((groundX % 12) + 12) % 12;
+      const px = i * 12 - xOff;
+      ctx.beginPath();
+      ctx.moveTo(px, gY + 12);
+      ctx.lineTo(px + 6, gY + 12);
+      ctx.lineTo(px + 12, gY + 24);
+      ctx.lineTo(px + 6, gY + 24);
+      ctx.fill();
+    }
+  }
+
+  function drawPipe(x, topH, bottomY) {
+    ctx.fillStyle = COLORS.pipe;
+    ctx.fillRect(x + 3, 0, PIPE_WIDTH - 6, topH - 14);
+    ctx.fillStyle = COLORS.pipeHighlight;
+    ctx.fillRect(x + 6, 0, 8, topH - 14);
+    ctx.fillStyle = COLORS.pipeDark;
+    ctx.fillRect(x + PIPE_WIDTH - 12, 0, 6, topH - 14);
+    ctx.fillStyle = COLORS.pipe;
+    ctx.fillRect(x, topH - 14, PIPE_WIDTH, 14);
+    ctx.fillStyle = COLORS.pipeHighlight;
+    ctx.fillRect(x + 3, topH - 14, 8, 14);
+    ctx.fillStyle = COLORS.pipeDark;
+    ctx.fillRect(x + PIPE_WIDTH - 8, topH - 14, 5, 14);
+    ctx.strokeStyle = COLORS.pipeBorder;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, 0, PIPE_WIDTH - 2, topH - 14);
+    ctx.strokeRect(x - 1, topH - 15, PIPE_WIDTH + 2, 16);
+
+    const bH = H - GROUND_HEIGHT - bottomY;
+    ctx.fillStyle = COLORS.pipe;
+    ctx.fillRect(x + 3, bottomY + 14, PIPE_WIDTH - 6, bH);
+    ctx.fillStyle = COLORS.pipeHighlight;
+    ctx.fillRect(x + 6, bottomY + 14, 8, bH);
+    ctx.fillStyle = COLORS.pipeDark;
+    ctx.fillRect(x + PIPE_WIDTH - 12, bottomY + 14, 6, bH);
+    ctx.fillStyle = COLORS.pipe;
+    ctx.fillRect(x, bottomY, PIPE_WIDTH, 14);
+    ctx.fillStyle = COLORS.pipeHighlight;
+    ctx.fillRect(x + 3, bottomY, 8, 14);
+    ctx.fillStyle = COLORS.pipeDark;
+    ctx.fillRect(x + PIPE_WIDTH - 8, bottomY, 5, 14);
+    ctx.strokeStyle = COLORS.pipeBorder;
+    ctx.strokeRect(x - 1, bottomY - 1, PIPE_WIDTH + 2, 16);
+    ctx.strokeRect(x + 1, bottomY + 14, PIPE_WIDTH - 2, bH);
+  }
+
+  function drawBird() {
+    ctx.save();
+    ctx.translate(bird.x + BIRD_W / 2, bird.y + BIRD_H / 2);
+
+    let angle = bird.rotation;
+    if (state === 'playing') {
+      angle = Math.min(bird.vy * 4, 90) * Math.PI / 180;
+      bird.rotation = angle;
+    } else if (state === 'dead') {
+      angle = 90 * Math.PI / 180;
+    } else {
+      angle = 0;
+    }
+    ctx.rotate(angle);
+
+    ctx.fillStyle = COLORS.bird;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, BIRD_W / 2, BIRD_H / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = COLORS.birdDark;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = COLORS.birdWing;
+    const wingY = Math.sin(bird.wingFrame * 0.3) * 4;
+    ctx.beginPath();
+    ctx.ellipse(-4, 2 + wingY, 10, 6, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = COLORS.birdDark;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = COLORS.birdEye;
+    ctx.beginPath();
+    ctx.arc(8, -4, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.birdPupil;
+    ctx.beginPath();
+    ctx.arc(10, -4, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = COLORS.birdBeak;
+    ctx.beginPath();
+    ctx.moveTo(14, 0);
+    ctx.lineTo(22, 2);
+    ctx.lineTo(14, 6);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawScore() {
+    ctx.fillStyle = COLORS.text;
+    ctx.strokeStyle = COLORS.textStroke;
+    ctx.lineWidth = 3;
+    ctx.font = 'bold 36px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.strokeText(score, W / 2, 50);
+    ctx.fillText(score, W / 2, 50);
+  }
+
+  // === 难度选择菜单 ===
+  function drawMenu() {
+    ctx.fillStyle = COLORS.text;
+    ctx.strokeStyle = COLORS.textStroke;
+    ctx.lineWidth = 3;
+    ctx.font = 'bold 32px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.strokeText('Flappy Bird', W / 2, H / 4);
+    ctx.fillText('Flappy Bird', W / 2, H / 4);
+
+    ctx.font = '16px Arial, sans-serif';
+    ctx.lineWidth = 2;
+    ctx.strokeText('Select Difficulty', W / 2, H / 4 + 40);
+    ctx.fillText('Select Difficulty', W / 2, H / 4 + 40);
+
+    const btnW = 160, btnH = 44, gap = 16;
+    const startY = H / 3 + 30;
+    const keys = ['easy', 'normal', 'hard'];
+
+    keys.forEach((key, i) => {
+      const d = DIFFICULTIES[key];
+      const bx = W / 2 - btnW / 2;
+      const by = startY + i * (btnH + gap);
+      menuButtons[i].y = by;
+
+      ctx.fillStyle = d.color;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, btnW, btnH, 8);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 20px Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.label, W / 2, by + btnH / 2 + 7);
+    });
+  }
+
+  function drawReady() {
+    const d = DIFFICULTIES[difficulty];
+
+    ctx.fillStyle = COLORS.text;
+    ctx.strokeStyle = COLORS.textStroke;
+    ctx.lineWidth = 3;
+    ctx.font = 'bold 28px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.strokeText('Get Ready!', W / 2, H / 3);
+    ctx.fillText('Get Ready!', W / 2, H / 3);
+
+    ctx.font = 'bold 16px Arial, sans-serif';
+    ctx.fillStyle = d.color;
+    ctx.strokeStyle = COLORS.textStroke;
+    ctx.lineWidth = 2;
+    ctx.strokeText('Difficulty: ' + d.label, W / 2, H / 3 + 35);
+    ctx.fillText('Difficulty: ' + d.label, W / 2, H / 3 + 35);
+
+    ctx.fillStyle = COLORS.text;
+    ctx.font = '18px Arial, sans-serif';
+    ctx.lineWidth = 2;
+    ctx.strokeText('Tap to Start', W / 2, H / 3 + 65);
+    ctx.fillText('Tap to Start', W / 2, H / 3 + 65);
+
+    const bounce = Math.sin(frameCount * 0.08) * 5;
+    ctx.font = '32px Arial, sans-serif';
+    ctx.fillText('👆', W / 2, H / 2 + 50 + bounce);
+  }
+
+  function drawGameOver() {
+    const d = DIFFICULTIES[difficulty];
+
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = COLORS.text;
+    ctx.strokeStyle = COLORS.textStroke;
+    ctx.lineWidth = 3;
+    ctx.font = 'bold 32px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.strokeText('Game Over', W / 2, H / 4 + 10);
+    ctx.fillText('Game Over', W / 2, H / 4 + 10);
+
+    const panelX = W / 2 - 90;
+    const panelY = H / 4 + 30;
+    const panelW = 180, panelH = 110;
+    ctx.fillStyle = '#deb840';
+    ctx.fillRect(panelX, panelY, panelW, panelH);
+    ctx.strokeStyle = '#8b6c0a';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(panelX, panelY, panelW, panelH);
+    ctx.fillStyle = '#f5eec8';
+    ctx.fillRect(panelX + 8, panelY + 8, panelW - 16, panelH - 16);
+
+    ctx.fillStyle = d.color;
+    ctx.font = 'bold 14px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('[ ' + d.label + ' ]', W / 2, panelY + 28);
+
+    ctx.fillStyle = '#000';
+    ctx.font = '14px Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('SCORE', panelX + 20, panelY + 52);
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 20px Arial, sans-serif';
+    ctx.fillText(score, panelX + panelW - 20, panelY + 52);
+
+    ctx.textAlign = 'left';
+    ctx.font = '14px Arial, sans-serif';
+    ctx.fillText('BEST', panelX + 20, panelY + 78);
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 20px Arial, sans-serif';
+    ctx.fillText(bestScore, panelX + panelW - 20, panelY + 78);
+
+    ctx.fillStyle = '#666';
+    ctx.font = '11px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('(Best on this difficulty)', W / 2, panelY + 95);
+
+    const btnY = panelY + panelH + 20;
+    ctx.fillStyle = '#73bf2e';
+    ctx.beginPath();
+    ctx.roundRect(W / 2 - 65, btnY, 130, 40, 8);
+    ctx.fill();
+    ctx.strokeStyle = '#3b5c14';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Play Again', W / 2, btnY + 26);
+
+    const btn2Y = btnY + 54;
+    ctx.fillStyle = '#5c6bc0';
+    ctx.beginPath();
+    ctx.roundRect(W / 2 - 65, btn2Y, 130, 40, 8);
+    ctx.fill();
+    ctx.strokeStyle = '#3949ab';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px Arial, sans-serif';
+    ctx.fillText('Change Difficulty', W / 2, btn2Y + 26);
+  }
+
+  // === 碰撞检测 ===
+  function checkCollision() {
+    if (bird.y + BIRD_H >= H - GROUND_HEIGHT) return true;
+    if (bird.y <= 0) return true;
+    for (let p of pipes) {
+      if (bird.x + BIRD_W > p.x && bird.x < p.x + PIPE_WIDTH) {
+        if (bird.y < p.topH || bird.y + BIRD_H > p.topH + PIPE_GAP) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // === 游戏逻辑更新 ===
+  function update() {
+    frameCount++;
+
+    if (state === 'menu') {
+      groundX += 1;
+      return;
+    }
+
+    if (state === 'ready') {
+      bird.y = H / 2 - 20 + Math.sin(frameCount * 0.05) * 8;
+      bird.wingFrame += 0.5;
+      groundX += 1;
+      return;
+    }
+
+    if (state === 'playing') {
+      bird.vy += GRAVITY;
+      bird.y += bird.vy;
+      bird.wingFrame += 0.5;
+      groundX += PIPE_SPEED;
+
+      if (frameCount % PIPE_SPAWN_INTERVAL === 0) {
+        const minTop = 60;
+        const maxTop = H - GROUND_HEIGHT - PIPE_GAP - 60;
+        const topH = minTop + Math.random() * (maxTop - minTop);
+        pipes.push({ x: W, topH: topH, scored: false });
+      }
+
+      for (let i = pipes.length - 1; i >= 0; i--) {
+        pipes[i].x -= PIPE_SPEED;
+        if (!pipes[i].scored && pipes[i].x + PIPE_WIDTH < bird.x) {
+          pipes[i].scored = true;
+          score++;
+        }
+        if (pipes[i].x + PIPE_WIDTH < -10) {
+          pipes.splice(i, 1);
+        }
+      }
+
+      if (checkCollision()) {
+        state = 'dead';
+        deathTimer = 0;
+        if (score > bestScore) {
+          bestScore = score;
+          localStorage.setItem(getBestKey(), bestScore);
+        }
+      }
+    }
+
+    if (state === 'dead') {
+      deathTimer++;
+      if (bird.y + BIRD_H < H - GROUND_HEIGHT) {
+        bird.vy += GRAVITY;
+        bird.y += bird.vy;
+        if (bird.y + BIRD_H > H - GROUND_HEIGHT) {
+          bird.y = H - GROUND_HEIGHT - BIRD_H;
+        }
+      }
+    }
+  }
+
+  // === 绘制 ===
+  function draw() {
+    drawSky();
+    drawClouds();
+
+    for (let p of pipes) {
+      drawPipe(p.x, p.topH, p.topH + PIPE_GAP);
+    }
+
+    drawGround();
+
+    if (state === 'menu') {
+      bird.y = H / 2 - 20 + Math.sin(frameCount * 0.05) * 8;
+      bird.wingFrame += 0.5;
+      drawBird();
+      drawMenu();
+    } else {
+      drawBird();
+      if (state === 'ready') {
+        drawReady();
+      } else {
+        drawScore();
+      }
+      if (state === 'dead' && deathTimer > 20) {
+        drawGameOver();
+      }
+    }
+  }
+
+  // === 主循环 ===
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // === 坐标转换 ===
+  function getCanvasPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: (clientX - rect.left) / scale,
+      y: (clientY - rect.top) / scale
+    };
+  }
+
+  // === 输入处理 ===
+  function handleInput(e) {
+    e.preventDefault();
+    const pos = getCanvasPos(e);
+
+    if (state === 'menu') {
+      const btnW = 160, btnH = 44;
+      const bx = W / 2 - btnW / 2;
+      for (let i = 0; i < menuButtons.length; i++) {
+        const by = menuButtons[i].y;
+        if (pos.x >= bx && pos.x <= bx + btnW && pos.y >= by && pos.y <= by + btnH) {
+          difficulty = menuButtons[i].key;
+          applyDifficulty();
+          bestScore = parseInt(localStorage.getItem(getBestKey()) || '0');
+          initGame();
+          state = 'ready';
+          return;
+        }
+      }
+      return;
+    }
+
+    if (state === 'ready') {
+      state = 'playing';
+      bird.vy = JUMP_FORCE;
+      frameCount = 0;
+    } else if (state === 'playing') {
+      bird.vy = JUMP_FORCE;
+    } else if (state === 'dead' && deathTimer > 30) {
+      const panelY = H / 4 + 30;
+      const panelH = 110;
+      const btn1Y = panelY + panelH + 20;
+      const btn2Y = btn1Y + 54;
+      const btnX = W / 2 - 65, btnW2 = 130, btnH2 = 40;
+
+      if (pos.x >= btnX && pos.x <= btnX + btnW2) {
+        if (pos.y >= btn2Y && pos.y <= btn2Y + btnH2) {
+          initGame();
+          state = 'menu';
+          return;
+        }
+        if (pos.y >= btn1Y && pos.y <= btn1Y + btnH2) {
+          initGame();
+          state = 'ready';
+          return;
+        }
+      }
+      initGame();
+      state = 'ready';
+    }
+  }
+
+  canvas.addEventListener('touchstart', handleInput, { passive: false });
+  canvas.addEventListener('mousedown', handleInput);
+
+  document.addEventListener('keydown', function(e) {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      if (state === 'ready' || state === 'playing') {
+        handleInput(e);
+      } else if (state === 'dead' && deathTimer > 30) {
+        initGame();
+        state = 'ready';
+      }
+    }
+  });
+
+  document.addEventListener('dblclick', function(e) { e.preventDefault(); });
+
+  loop();
+})();
+</script>
+</body>
+</html>
