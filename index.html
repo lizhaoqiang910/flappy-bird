@@ -105,6 +105,12 @@ canvas {
     textStroke: '#000',
   };
 
+  // === 时间系统（基于120fps标准化） ===
+  const TARGET_FPS = 120;
+  const TARGET_DT = 1000 / TARGET_FPS; // 8.33ms
+  let lastTime = 0;
+  let accumulator = 0;
+
   // === 游戏状态 ===
   let state = 'menu';
   let difficulty = 'normal';
@@ -534,9 +540,23 @@ canvas {
     }
   }
 
-  // === 主循环 ===
-  function loop() {
-    update();
+  // === 主循环（固定时间步长） ===
+  function loop(timestamp) {
+    if (!lastTime) lastTime = timestamp;
+    let delta = timestamp - lastTime;
+    lastTime = timestamp;
+
+    // 防止跳帧过大（比如切后台回来）
+    if (delta > 200) delta = TARGET_DT;
+
+    accumulator += delta;
+
+    // 按固定步长更新逻辑，确保不同帧率下物理一致
+    while (accumulator >= TARGET_DT) {
+      update();
+      accumulator -= TARGET_DT;
+    }
+
     draw();
     requestAnimationFrame(loop);
   }
@@ -620,7 +640,7 @@ canvas {
 
   document.addEventListener('dblclick', function(e) { e.preventDefault(); });
 
-  loop();
+  requestAnimationFrame(loop);
 })();
 </script>
 </body>
